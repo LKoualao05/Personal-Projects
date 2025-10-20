@@ -1,0 +1,8 @@
+{
+  "GMAIL_QUERY_WINDOW_DAYS": 730,
+  "SHEET_ID": "1wwSc3-LNuKhCJvvdNRdEJwAHvoO7G2Jp0TOFnCTd6xc",
+  "SHEET_NAME": "Applications",
+  "PROCESSED_SHEET_NAME": "ProcessedMessageIds",
+  "SUMMARY_SHEET_NAME": "CompanySummary",
+  "TIMEZONE": "America/New_York"
+}

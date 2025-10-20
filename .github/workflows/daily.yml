@@ -1,0 +1,40 @@
+name: Daily Gmail Application Tracker
+
+on:
+  schedule:
+    - cron: "0 13 * * *"  # daily at 13:00 UTC
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write credentials.json
+        run: |
+          echo "${{ secrets.GOOGLE_CREDENTIALS_JSON }}" > credentials.json
+
+      - name: Write token.json
+        run: |
+          echo "${{ secrets.GOOGLE_OAUTH_TOKEN_JSON }}" > token.json
+
+      - name: Configure config.json
+        run: |
+          # If you prefer, you can also template SHEET_ID here using a GitHub secret
+          cat config.json
+
+      - name: Run tracker
+        run: |
+          python main.py

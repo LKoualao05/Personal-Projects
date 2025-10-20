@@ -1,0 +1,44 @@
+name: Daily Gmail Internship Tracker
+
+on:
+  schedule:
+    # Run daily at 9 AM EST (2 PM UTC)
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  track-applications:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create credentials.json from secret
+      run: |
+        echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+    
+    - name: Create token.json from secret
+      run: |
+        echo '${{ secrets.GOOGLE_OAUTH_TOKEN_JSON }}' > token.json
+    
+    - name: Run Gmail tracker
+      run: |
+        python main.py
+      env:
+        PYTHONPATH: ${{ github.workspace }}
+    
+    - name: Clean up sensitive files
+      if: always()
+      run: |
+        rm -f credentials.json token.json
