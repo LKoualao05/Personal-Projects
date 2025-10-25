@@ -48,6 +48,37 @@ def decode_snippet(payload: Dict[str, Any]) -> str:
     except Exception:
         return ""
 
+def extract_body_content(message: Dict[str, Any]) -> str:
+    """Extract text content from Gmail message body"""
+    def get_text_from_payload(payload):
+        if payload.get("mimeType") == "text/plain":
+            data = payload.get("body", {}).get("data", "")
+            if data:
+                import base64
+                return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="ignore")
+        elif payload.get("mimeType") == "text/html":
+            data = payload.get("body", {}).get("data", "")
+            if data:
+                import base64
+                html_content = base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="ignore")
+                # Simple HTML tag removal for basic text extraction
+                import re
+                text = re.sub(r'<[^>]+>', ' ', html_content)
+                text = re.sub(r'\s+', ' ', text).strip()
+                return text
+        elif payload.get("mimeType", "").startswith("multipart/"):
+            parts = payload.get("parts", [])
+            for part in parts:
+                text = get_text_from_payload(part)
+                if text:
+                    return text
+        return ""
+    
+    try:
+        return get_text_from_payload(message.get("payload", {}))
+    except Exception:
+        return ""
+
 def get_header(msg: Dict[str, Any], name: str) -> str:
     for h in msg.get("payload", {}).get("headers", []):
         if h.get("name") == name:
@@ -71,20 +102,53 @@ def iso_date_from_internal(ts_ms: int, tz_name: str) -> str:
 
 def search_confirmation_messages(gmail, lookback_days: int) -> List[str]:
     base_query = gmail_query_since(lookback_days)
-    # broaden search with likely confirmation phrases; exclusion handled by our filter
-    search_phrases = [
-        '"application received" OR "application submitted" OR "thanks for applying" OR "your application to" OR "submission received"'
+    
+    # Cast a much wider net with multiple search strategies
+    search_queries = [
+        # Primary confirmation searches
+        f'{base_query} ("application received" OR "application submitted" OR "submission received" OR "application confirmation")',
+        f'{base_query} ("thanks for applying" OR "thank you for applying" OR "thanks for your application" OR "thank you for your application")',
+        f'{base_query} ("we received your application" OR "received your application" OR "your application has been received")',
+        f'{base_query} ("successfully applied" OR "successfully submitted" OR "application complete" OR "submission complete")',
+        f'{base_query} ("your application to" OR "your application for" OR "confirming your application")',
+        
+        # Broader searches for common senders
+        f'{base_query} (from:noreply OR from:no-reply OR from:careers OR from:recruiting OR from:talent OR from:jobs) (application OR applied OR submit)',
+        f'{base_query} (from:greenhouse OR from:workday OR from:lever OR from:smartrecruiters OR from:icims OR from:successfactors)',
+        
+        # Subject line patterns
+        f'{base_query} subject:(application OR applied OR submission) (received OR submitted OR confirmation OR thank)',
+        
+        # Company-specific patterns
+        f'{base_query} ("your profile has been submitted" OR "profile submitted" OR "candidate profile" OR "added to our candidate pool")',
+        f'{base_query} ("application is being reviewed" OR "reviewing your application" OR "your candidacy")',
     ]
-    full_query = f"{base_query} ({' '.join(search_phrases)})"
-    ids = []
-    page_token = None
-    while True:
-        res = gmail.users().messages().list(userId="me", q=full_query, pageToken=page_token, maxResults=500).execute()
-        ids.extend([m["id"] for m in res.get("messages", [])])
-        page_token = res.get("nextPageToken")
-        if not page_token:
-            break
-    return ids
+    
+    all_ids = set()  # Use set to avoid duplicates
+    
+    for query in search_queries:
+        try:
+            page_token = None
+            while True:
+                res = gmail.users().messages().list(
+                    userId="me", 
+                    q=query, 
+                    pageToken=page_token, 
+                    maxResults=500
+                ).execute()
+                
+                messages = res.get("messages", [])
+                all_ids.update(m["id"] for m in messages)
+                
+                page_token = res.get("nextPageToken")
+                if not page_token:
+                    break
+        except Exception as e:
+            # Continue with other queries if one fails
+            print(f"Warning: Search query failed: {query[:50]}... Error: {e}")
+            continue
+    
+    return list(all_ids)
 
 def main():
     cfg = load_config()
@@ -102,23 +166,55 @@ def main():
     processed_ids = get_processed_ids(sheets, spreadsheet_id, processed_sheet)
 
     # Search
+    print("Searching for internship application emails...")
     ids = search_confirmation_messages(gmail, cfg["GMAIL_QUERY_WINDOW_DAYS"])
+    print(f"Found {len(ids)} potential messages to check")
 
     new_rows = []
     just_processed = []
+    processed_count = 0
+    confirmed_count = 0
 
-    for mid in ids:
+    for i, mid in enumerate(ids):
         if mid in processed_ids:
             continue
+        
+        # Progress indicator
+        if i % 50 == 0:
+            print(f"Processing message {i+1}/{len(ids)}...")
+        
         try:
+            # First get metadata to check basic criteria
             msg = gmail.users().messages().get(userId="me", id=mid, format="metadata", metadataHeaders=["Subject","From"]).execute()
             subject = get_header(msg, "Subject")
             from_header = get_header(msg, "From")
             from_name = parse_from_header(from_header)
             snippet = msg.get("snippet","")
-            if not contains_confirmation(subject, snippet):
+            
+            # Try with snippet first
+            is_confirmation = contains_confirmation(subject, snippet)
+            
+            # If snippet check fails but subject looks promising, get full content
+            if not is_confirmation and subject:
+                subject_lower = subject.lower()
+                promising_subject = any(keyword in subject_lower for keyword in [
+                    "application", "applied", "submission", "thank", "received", "confirmation"
+                ])
+                
+                if promising_subject:
+                    try:
+                        # Get full message content
+                        full_msg = gmail.users().messages().get(userId="me", id=mid, format="full").execute()
+                        full_body = extract_body_content(full_msg)
+                        is_confirmation = contains_confirmation(subject, full_body[:1000])  # Use first 1000 chars
+                    except Exception:
+                        # Fall back to snippet if full content fails
+                        is_confirmation = False
+            
+            if not is_confirmation:
                 continue
 
+            confirmed_count += 1
             thread_id = msg.get("threadId")
             internal_dt_ms = int(msg.get("internalDate"))  # ms epoch
             date_applied = iso_date_from_internal(internal_dt_ms, timezone_name)
@@ -139,9 +235,20 @@ def main():
             ]
             new_rows.append(row)
             just_processed.append(mid)
+            
+            # Show confirmation found
+            print(f"✓ Found application: {company} - {role}")
+            
         except HttpError as e:
-            # skip problematic message but mark as processed to avoid repeated errors? safer to skip without marking
+            print(f"Warning: Could not process message {mid}: {e}")
             continue
+        except Exception as e:
+            print(f"Warning: Unexpected error processing message {mid}: {e}")
+            continue
+
+    print(f"\nProcessing complete!")
+    print(f"Found {confirmed_count} internship application confirmations")
+    print(f"Added {len(new_rows)} new entries")
 
     if new_rows:
         append_applications(sheets, spreadsheet_id, app_sheet, new_rows)
