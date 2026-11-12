@@ -91,3 +91,70 @@ def test_fresh_sheet_and_summary_tab():
     store.refresh_summary()
     summary = svc.tabs["CompanySummary"]
     assert summary[0][:2] == ["Company", "Applications"] and summary[1][:2] == ["Acme", "1"]
+
+
+# --- regression: live incident 2026-11-12 ------------------------------------------
+# Sheets' append "table detection" ended the table mid-sheet and INSERTed new rows there;
+# backfill updates then hit stale row numbers, overwriting 92 new rows and duplicating 76.
+
+def _legacy_sheet(n_rows: int, table_end: int):
+    rows = [LEGACY + USER_COLS]
+    for i in range(n_rows):
+        extra = ["Yes", "No", "Rejected"] if i % 7 == 0 else []
+        rows.append([f"Co{i}", f"Role {i}", "", "2025-01-01", f"url{i}", "from", f"subj{i}", f"old{i}", *extra])
+    return FakeSheetsService({"Applications": rows, "ProcessedMessageIds": [["Message ID"]]},
+                             append_table_end={"Applications": table_end})
+
+
+def test_sync_is_correct_even_when_sheets_would_insert_mid_table():
+    from tracker.pipeline import run_sync
+    from tracker.schemas import Category
+
+    from .fakes import FakeClassifier, FakeGmail, analysis, gmail_message
+
+    svc = _legacy_sheet(30, table_end=15)
+    store = GoogleSheetsStore(svc, SETTINGS)
+    old = [gmail_message(f"old{i}", f"subj{i}", "Thanks for applying") for i in range(30)]
+    new = [gmail_message(f"new{i}", f"New {i}", "Thanks for applying", day=i) for i in range(5)]
+    results = {f"old{i}": analysis(Category.APPLICATION_CONFIRMATION, company=f"Co{i}", role=f"Role {i}") for i in range(30)}
+    results |= {f"new{i}": analysis(Category.APPLICATION_CONFIRMATION, company=f"NewCo{i}", role="Intern") for i in range(5)}
+    gmail = FakeGmail(new + old)
+    # Old ids are already processed (legacy rows); new ones are not.
+    svc.tabs["ProcessedMessageIds"] += [[f"old{i}"] for i in range(30)]
+    res = run_sync(SETTINGS, gmail, store, FakeClassifier(results), backfill=True, log=lambda *_: None)
+
+    assert svc.append_calls.count("Applications") == 0  # never relies on table detection
+    rows = store.list_applications()
+    ids = [r.message_id for r in rows]
+    assert len(rows) == 35 and len(set(ids)) == 35  # nothing lost, nothing duplicated
+    assert res.new_applications == 5 and res.backfilled == 30
+    by_id = {r.message_id: r for r in rows}
+    assert all(by_id[f"old{i}"].summary and by_id[f"old{i}"].company == f"Co{i}" for i in range(30))
+    for i in range(0, 30, 7):  # user columns stay attached to the right application
+        assert by_id[f"old{i}"].extra == {"Technical Assessment": "Yes", "Interviews": "No", "Outcome": "Rejected"}
+
+
+def test_updates_follow_rows_the_user_moved():
+    svc = _legacy_sheet(6, table_end=3)
+    store = GoogleSheetsStore(svc, SETTINGS)
+    store.ensure_schema()
+    target = next(r for r in store.list_applications() if r.message_id == "old2")
+    grid = svc.tabs["Applications"]
+    grid[1:] = list(reversed(grid[1:]))  # user sorts the sheet between our read and write
+    target.status, target.summary = "Interview", "Moved but still found."
+    store.update_applications([target])
+    row = next(r for r in store.list_applications() if r.message_id == "old2")
+    assert (row.status, row.summary, row.company) == ("Interview", "Moved but still found.", "Co2")
+    assert sum(1 for r in store.list_applications() if r.status == "Interview") == 1
+
+
+def test_append_is_idempotent_and_grows_the_grid():
+    svc = FakeSheetsService({"Applications": [list(APPLICATION_HEADERS)]})
+    svc.row_counts["Applications"] = 3
+    store = GoogleSheetsStore(svc, SETTINGS)
+    store.ensure_schema()
+    rows = [ApplicationRow(company=f"C{i}", message_id=f"m{i}") for i in range(5)]
+    store.append_applications(rows)
+    store.append_applications(rows)  # retry after a crash must not duplicate
+    assert [r.message_id for r in store.list_applications()] == [f"m{i}" for i in range(5)]
+    assert svc.row_counts["Applications"] >= 6

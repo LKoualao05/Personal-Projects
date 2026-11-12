@@ -41,10 +41,16 @@ class _Exec:
 
 
 class FakeSheetsService:
-    def __init__(self, tabs: dict[str, list[list[str]]] | None = None, columns: int = 26):
+    def __init__(self, tabs: dict[str, list[list[str]]] | None = None, columns: int = 26,
+                 append_table_end: dict[str, int] | None = None):
         self.tabs = {name: [list(r) for r in rows] for name, rows in (tabs or {}).items()}
         self.columns = {name: columns for name in self.tabs}
+        self.row_counts = {name: 1000 for name in self.tabs}
         self.writes: list[tuple[str, list[list[Any]]]] = []  # (range, values) for assertions
+        self.append_calls: list[str] = []
+        # Simulates the live Sheets behaviour that caused data loss: append's table
+        # detection ends the table at this row and INSERTs new rows after it.
+        self.append_table_end = append_table_end or {}
 
     # spreadsheets() / values() chain -------------------------------------------
     def spreadsheets(self):
@@ -55,7 +61,8 @@ class FakeSheetsService:
 
     def get(self, spreadsheetId: str):
         return _Exec(lambda: {"sheets": [
-            {"properties": {"title": t, "sheetId": i, "gridProperties": {"columnCount": self.columns[t]}}}
+            {"properties": {"title": t, "sheetId": i, "gridProperties": {
+                "columnCount": self.columns[t], "rowCount": self.row_counts.get(t, 1000)}}}
             for i, t in enumerate(self.tabs)
         ]})
 
@@ -64,10 +71,11 @@ class FakeSheetsService:
             for req in body["requests"]:
                 if "addSheet" in req:
                     title = req["addSheet"]["properties"]["title"]
-                    self.tabs[title], self.columns[title] = [], 26
+                    self.tabs[title], self.columns[title], self.row_counts[title] = [], 26, 1000
                 elif "appendDimension" in req:
                     title = list(self.tabs)[req["appendDimension"]["sheetId"]]
-                    self.columns[title] += req["appendDimension"]["length"]
+                    key = self.columns if req["appendDimension"]["dimension"] == "COLUMNS" else self.row_counts
+                    key[title] += req["appendDimension"]["length"]
             return {}
         return _Exec(run)
 
@@ -126,7 +134,12 @@ class _Values:
     def append(self, spreadsheetId: str, range: str, valueInputOption: str, insertDataOption: str, body: dict):
         def run():
             tab, _, c0, _, _ = parse_a1(range)
+            self.svc.append_calls.append(tab)
             grid = self.svc._grid(tab)
+            if tab in self.svc.append_table_end:  # INSERT_ROWS in the middle, shifting rows down
+                at = self.svc.append_table_end[tab]
+                grid[at:at] = [[str(v) for v in row] for row in body["values"]]
+                return {}
             last = max((i + 1 for i, line in enumerate(grid) if any(line)), default=0)
             letters = "".join(chr(64 + c0))
             self.svc.write(f"{tab}!{letters}{last + 1}", body["values"])

@@ -165,29 +165,71 @@ class GoogleSheetsStore:
             self.ensure_schema()
         return self.header()
 
+    # Writes never use values.append: its "table detection" can end a table early
+    # and INSERT rows mid-sheet, shifting every row below (seen on the live sheet).
+    # Rows are written at explicit positions, and existing rows are found by their
+    # Message ID right before writing, so a sort or insert since the read is harmless.
+
+    def _message_id_rows(self) -> tuple[dict[str, int], int]:
+        """(message id -> current row number, last used row number)."""
+        header = self.header()
+        last = _col(max(len(header), 1))
+        values = self._values().get(spreadsheetId=self.sid, range=f"{self.app_tab}!A1:{last}").execute(
+            num_retries=API_RETRIES).get("values", [])
+        mid_col = header.index("Message ID") if "Message ID" in header else None
+        positions: dict[str, int] = {}
+        for i, row in enumerate(values[1:], start=2):
+            mid = row[mid_col].strip() if mid_col is not None and mid_col < len(row) else ""
+            if mid:
+                positions.setdefault(mid, i)
+        return positions, len(values)
+
+    def _ensure_grid_rows(self, needed: int) -> None:
+        props = self._tab_props()[self.app_tab]
+        have = props.get("gridProperties", {}).get("rowCount", 1000)
+        if needed > have:
+            self.svc.spreadsheets().batchUpdate(spreadsheetId=self.sid, body={"requests": [{"appendDimension": {
+                "sheetId": props["sheetId"], "dimension": "ROWS", "length": needed - have + 100}}]}).execute(
+                num_retries=API_RETRIES)
+
+    def _write_rows(self, placed: list[tuple[int, ApplicationRow]], header: list[str]) -> None:
+        data = []
+        for row_number, r in placed:
+            values = r.to_row(header)
+            for start, end in self._owned_runs():  # never touch user-owned cells
+                data.append({
+                    "range": f"{self.app_tab}!{_col(start + 1)}{row_number}:{_col(end + 1)}{row_number}",
+                    "values": [values[start:end + 1]],
+                })
+        for i in range(0, len(data), 1000):
+            self._values().batchUpdate(spreadsheetId=self.sid, body={"valueInputOption": "RAW", "data": data[i:i + 1000]}
+                                       ).execute(num_retries=API_RETRIES)
+
     def append_applications(self, rows: list[ApplicationRow]) -> None:
         if not rows:
             return
         header = self._require_columns()
-        self._values().append(
-            spreadsheetId=self.sid, range=f"{self.app_tab}!A:{_col(len(header))}", valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS", body={"values": [r.to_row(header) for r in rows]},
-        ).execute(num_retries=API_RETRIES)
+        positions, last_row = self._message_id_rows()
+        fresh = [r for r in rows if not r.message_id or r.message_id not in positions]  # idempotent re-runs
+        if not fresh:
+            return
+        start = last_row + 1
+        self._ensure_grid_rows(start + len(fresh) - 1)
+        self._write_rows([(start + i, r) for i, r in enumerate(fresh)], header)
 
     def update_applications(self, rows: list[ApplicationRow]) -> None:
-        rows = [r for r in rows if r.row_number]
+        rows = [r for r in rows if r.row_number or r.message_id]
         if not rows:
             return
         header = self._require_columns()
-        data = []
+        positions, _ = self._message_id_rows()
+        placed = []
         for r in rows:
-            values = r.to_row(header)
-            for start, end in self._owned_runs():  # never touch user-owned cells
-                data.append({
-                    "range": f"{self.app_tab}!{_col(start + 1)}{r.row_number}:{_col(end + 1)}{r.row_number}",
-                    "values": [values[start:end + 1]],
-                })
-        self._values().batchUpdate(spreadsheetId=self.sid, body={"valueInputOption": "RAW", "data": data}).execute(num_retries=API_RETRIES)
+            target = positions.get(r.message_id) if r.message_id else r.row_number
+            if target is None:
+                raise RuntimeError(f"Row for message {r.message_id} not found; refusing to write by stale position.")
+            placed.append((target, r))
+        self._write_rows(placed, header)
 
     def refresh_summary(self) -> None:
         table = summarize(self.list_applications())
