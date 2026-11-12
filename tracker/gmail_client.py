@@ -11,6 +11,10 @@ from dateutil import tz
 
 from .schemas import EmailMessage
 
+# googleapiclient retries 429/5xx and 403 rate-limit errors with exponential backoff.
+# Gmail enforces a per-user units-per-minute quota that a large backlog hits quickly.
+API_RETRIES = 8
+
 # Queries that surface confirmations *and* later-stage emails (rejections,
 # interviews, assessments, offers) so Gemini can track status changes.
 CANDIDATE_QUERIES = [
@@ -39,7 +43,7 @@ def search_candidate_messages(gmail, after: str, queries: Iterable[str] = CANDID
         page_token = None
         try:
             while True:
-                res = gmail.users().messages().list(userId="me", q=query, pageToken=page_token, maxResults=500).execute()
+                res = gmail.users().messages().list(userId="me", q=query, pageToken=page_token, maxResults=500).execute(num_retries=API_RETRIES)
                 ids.update(m["id"] for m in res.get("messages", []))
                 page_token = res.get("nextPageToken")
                 if not page_token:
@@ -51,12 +55,12 @@ def search_candidate_messages(gmail, after: str, queries: Iterable[str] = CANDID
 
 def search_messages(gmail, query: str, max_results: int = 10) -> list[dict[str, str]]:
     """Free-form Gmail search returning lightweight metadata (used by the MCP server)."""
-    res = gmail.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+    res = gmail.users().messages().list(userId="me", q=query, maxResults=max_results).execute(num_retries=API_RETRIES)
     out = []
     for m in res.get("messages", []):
         msg = gmail.users().messages().get(
             userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject", "From", "Date"]
-        ).execute()
+        ).execute(num_retries=API_RETRIES)
         out.append({
             "id": msg["id"],
             "thread_id": msg.get("threadId", ""),
@@ -69,7 +73,7 @@ def search_messages(gmail, query: str, max_results: int = 10) -> list[dict[str, 
 
 
 def fetch_message(gmail, message_id: str) -> EmailMessage:
-    msg = gmail.users().messages().get(userId="me", id=message_id, format="full").execute()
+    msg = gmail.users().messages().get(userId="me", id=message_id, format="full").execute(num_retries=API_RETRIES)
     return parse_message(msg)
 
 

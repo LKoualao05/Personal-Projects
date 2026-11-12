@@ -151,7 +151,8 @@ def build_generate_config(thinking_level: str = ""):
         response_mime_type="application/json",
         response_schema=EmailAnalysis,
         temperature=0.0,
-        max_output_tokens=1024,
+        # Thinking tokens count against this budget; too low a cap truncates the JSON.
+        max_output_tokens=8192,
     )
     if thinking_level:
         kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level.upper())

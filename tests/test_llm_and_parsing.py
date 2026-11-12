@@ -106,3 +106,23 @@ def test_summary_counts_by_status():
     assert acme["Company"] == "Acme" and acme["Applications"] == 2 and acme["Rejected"] == 1
     assert acme["Latest Activity"] == "2025-02-01"
     assert dict(zip(header, table[2]))["Applied"] == 1  # blank status counts as Applied
+
+
+def test_output_budget_leaves_room_for_thinking():
+    # Regression: thinking models (gemini-3.5-flash spent up to ~820 thinking tokens on one eval email)
+    # count thinking against max_output_tokens; a 1024 cap truncated the JSON -> ValidationError.
+    assert build_generate_config("").max_output_tokens >= 4096
+
+
+def test_google_api_calls_retry_rate_limits():
+    # Regression: the first live backlog sync hit Gmail's per-user quota (403 rateLimitExceeded)
+    # and 1,900 fetches failed because execute() had no retries.
+    import inspect
+
+    import tracker.gmail_client as gc
+    import tracker.sheets_io as sio
+
+    for mod in (gc, sio):
+        src = inspect.getsource(mod)
+        assert ".execute()" not in src and "num_retries=API_RETRIES" in src
+    assert gc.API_RETRIES >= 5
