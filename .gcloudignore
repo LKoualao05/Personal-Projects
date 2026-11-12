@@ -1,0 +1,13 @@
+# gcloud run deploy --source uploads everything not listed here
+.git
+.github
+.venv
+**/__pycache__
+*.pyc
+token.json
+credentials.json
+.rag_store.json
+tests/
+eval/
+deploy/
+*.md

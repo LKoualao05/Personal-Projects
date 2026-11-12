@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+**/__pycache__
+*.pyc
+token.json
+credentials.json
+.rag_store.json
+tests/
+eval/
+deploy/
+*.md
