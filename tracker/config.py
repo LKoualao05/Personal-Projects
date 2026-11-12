@@ -37,6 +37,15 @@ class Settings:
     gemini_thinking_level: str = ""
     llm_max_workers: int = 6
 
+    # ADK agent (agents/tracker_agent). Tool use benefits from a stronger
+    # model than the high-volume classifier.
+    agent_model: str = "gemini-3.5-flash"
+    # Ask the user before the agent writes to the sheet (ADK tool confirmation).
+    agent_confirm_writes: bool = True
+    # Optional URL of a remote tracker MCP server (streamable HTTP). Empty
+    # means the agent launches ``python -m tracker.mcp_server`` over stdio.
+    tracker_mcp_url: str = ""
+
     # Gmail/Sheets OAuth files (relative paths resolve against the repo root).
     token_path: str = "token.json"
     credentials_path: str = "credentials.json"

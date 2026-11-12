@@ -7,7 +7,7 @@ Scans Gmail for job-application emails, uses **Gemini on Vertex AI** to classify
 ## Roadmap
 
 - [x] **Gemini on Vertex AI** classifies and summarizes applications
-- [ ] **ADK agent** exposes Gmail and Sheets through an **MCP server**
+- [x] **ADK agent** exposes Gmail and Sheets through an **MCP server**
 - [ ] **RAG** over job descriptions with a vector store (Firestore vector search)
 - [ ] **Eval script** tracks accuracy, latency and cost per request
 - [ ] Deployed on **Cloud Run**
@@ -48,6 +48,62 @@ Every classified message id is recorded, so emails are never re-processed or re-
 | `rejection` | Rejected | "We've decided to move forward with other candidates" |
 | `not_job_related` | — | Job alerts, newsletters, talent-community sign-ups |
 
+## ADK agent + MCP server
+
+Gmail and Sheets are exposed as **MCP tools** by `tracker/mcp_server.py` (MCP Python SDK 2.x). A **Google ADK** agent (`agents/tracker_agent`, Gemini on Vertex AI) connects to that server with `McpToolset` and answers questions in natural language. Any other MCP client (Claude Desktop, Claude Code, MCP Inspector) can use the same server.
+
+```
+ you ──► ADK agent (Gemini 3.5 Flash, Vertex AI)
+            │  McpToolset (stdio, or streamable HTTP via TRACKER_MCP_URL)
+            ▼
+       tracker MCP server ──► Gmail API (read-only)
+                          ──► Google Sheets (tracker)
+                          ──► Gemini classifier / sync pipeline
+```
+
+| Tool | Access | What it does |
+|---|---|---|
+| `search_gmail` | read | Gmail query syntax search (`from:greenhouse.io newer_than:30d`) |
+| `read_email` | read | Full text + links of one email |
+| `classify_email` | read | Run the Gemini classifier on one email |
+| `list_applications` | read | Sheet rows filtered by company / status / date / internship |
+| `application_stats` | read | Totals by status, response rate, per-month counts, top companies |
+| `update_application` | **write** | Change status/summary of one row |
+| `sync_applications` | **write** | Gmail → Gemini → Sheets sync (`dry_run=true` by default) |
+
+Example questions: *"Which companies have I heard back from this month?"*, *"Do I have any assessments with deadlines coming up?"*, *"Check for new application emails"*, *"Mark the Globex application as Interview."*
+
+### Run it
+
+```bash
+adk web agents                         # ADK dev UI → http://localhost:8000
+adk run agents/tracker_agent           # terminal chat
+python -m tracker.mcp_server           # MCP server alone (stdio)
+python -m tracker.mcp_server --http    # … or streamable HTTP at http://127.0.0.1:8765/mcp
+python -m agents.tracker_agent.serve_mcp   # the *agent itself* as a single MCP tool
+```
+
+Claude Desktop / Claude Code config (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "internship-tracker": {
+      "command": "/absolute/path/to/.venv/bin/python",
+      "args": ["-m", "tracker.mcp_server"],
+      "cwd": "/absolute/path/to/repo"
+    }
+  }
+}
+```
+
+### Guardrails
+
+- Gmail is read-only at the OAuth-scope level. The only writes go to the tracker sheet.
+- The agent asks for **confirmation** (ADK tool confirmation) before `update_application` or a non-dry-run `sync_applications`. Disable it with `AGENT_CONFIRM_WRITES=false`.
+- The agent exposed over MCP (`serve_mcp`) has the write tools filtered out, because an MCP host can't answer ADK confirmation prompts.
+- Both the agent and the server instructions treat email bodies as untrusted. Expected failures (expired token, bad status, unknown row) come back as readable tool errors.
+
 ## Project layout
 
 ```
@@ -62,6 +118,10 @@ tracker/
   pipeline.py           sync logic: dedupe, status tracking, backfill
   sheets_io.py          Google Sheets store (+ in-memory and dry-run stores)
   schemas.py            Pydantic/dataclass types
+  mcp_server.py         MCP server: Gmail + Sheets tools
+agents/tracker_agent/
+  agent.py              ADK agent (root_agent) using the MCP server via McpToolset
+  serve_mcp.py          the agent itself exposed as an MCP server
 tests/                  pytest suite with fake Gmail / Gemini / Sheets (no network)
 ```
 
@@ -99,6 +159,9 @@ All keys in `config.json` can be overridden with environment variables of the sa
 | `USE_LLM` | `true` | `false` forces the heuristic classifier |
 | `GMAIL_SEARCH_AFTER` | `2025/01/01` | Gmail search lower bound |
 | `LLM_MAX_WORKERS` | `6` | Parallel Gemini requests |
+| `AGENT_MODEL` | `gemini-3.5-flash` | Model for the ADK agent |
+| `AGENT_CONFIRM_WRITES` | `true` | Require confirmation before sheet writes |
+| `TRACKER_MCP_URL` | *(stdio)* | Use a remote MCP server over streamable HTTP |
 
 ## Columns written to `Applications`
 
@@ -119,4 +182,4 @@ The first eight match the original tracker, so existing sheets keep working. The
 ---
 
 **Created:** 2025-9-5
-**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI)
+**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server)
