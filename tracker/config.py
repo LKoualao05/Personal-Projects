@@ -46,6 +46,19 @@ class Settings:
     # means the agent launches ``python -m tracker.mcp_server`` over stdio.
     tracker_mcp_url: str = ""
 
+    # RAG over job descriptions.
+    rag_enabled: bool = True
+    # "hashing" = offline bag-of-words embedder (no API calls).
+    embedding_model: str = "gemini-embedding-001"
+    embedding_dims: int = 768
+    embedding_location: str = "us-central1"
+    vector_store: str = "firestore"  # firestore | local
+    firestore_database: str = "(default)"
+    firestore_collection: str = "job_description_chunks"
+    local_vector_path: str = ".rag_store.json"
+    # Model for grounded answers; empty means AGENT_MODEL.
+    rag_answer_model: str = ""
+
     # Gmail/Sheets OAuth files (relative paths resolve against the repo root).
     token_path: str = "token.json"
     credentials_path: str = "credentials.json"

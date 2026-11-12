@@ -38,6 +38,10 @@ How to work:
   "what's my status with X" questions, call list_applications or application_stats first.
 - Use search_gmail / read_email for details the sheet lacks (interview times, recruiter names,
   assessment deadlines). Gmail query syntax works: from:, subject:, newer_than:14d, after:YYYY/MM/DD.
+- For questions about what a role involves (skills, responsibilities, qualifications, tech stack,
+  "which of my applications mention X"), call search_job_descriptions and answer from the excerpts,
+  citing company and role. If nothing relevant is indexed, say so; the user can index a posting with
+  add_job_description.
 - To check for new emails, call sync_applications with dry_run=true and report what would change.
   Only call it with dry_run=false, or call update_application, when the user explicitly asks you to
   update their tracker.

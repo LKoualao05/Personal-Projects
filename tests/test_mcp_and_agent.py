@@ -45,7 +45,8 @@ def test_lists_all_tools_with_annotations():
             return (await client.list_tools()).tools
     tools = {t.name: t for t in asyncio.run(go())}
     assert set(tools) == {"search_gmail", "read_email", "classify_email", "list_applications",
-                          "application_stats", "update_application", "sync_applications"}
+                          "application_stats", "update_application", "sync_applications",
+                          "search_job_descriptions", "add_job_description"}
     for name, tool in tools.items():
         assert tool.annotations.read_only_hint is (name not in WRITE_TOOLS)
     assert "dry_run" in tools["sync_applications"].input_schema["properties"]

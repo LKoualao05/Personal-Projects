@@ -28,8 +28,9 @@ from .schemas import (
 )
 from .sheets_io import TrackerStore
 
-# Optional hook called with each (email, classification); used by RAG ingestion.
-OnClassified = Callable[[EmailMessage, Classification], None]
+# Optional hook called with each job-related (email, classification), skipped in
+# dry runs. Used by RAG ingestion; an int return value counts indexed chunks.
+OnClassified = Callable[[EmailMessage, Classification], Optional[int]]
 
 _COMPANY_SUFFIXES = re.compile(
     r"\b(inc|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|the|group|holdings|careers|recruiting|university recruiting)\b"
@@ -94,6 +95,7 @@ class SyncResult:
     duplicates: int = 0
     ignored: int = 0
     backfilled: int = 0
+    jd_chunks_indexed: int = 0
     errors: list[str] = field(default_factory=list)
     stats: list[CallStats] = field(default_factory=list)
     changes: list[str] = field(default_factory=list)
@@ -113,6 +115,7 @@ class SyncResult:
             f"  duplicates skipped:  {self.duplicates}",
             f"  not job-related:     {self.ignored}",
             f"  backfilled rows:     {self.backfilled}",
+            f"  JD chunks indexed:   {self.jd_chunks_indexed}",
             f"  errors:              {len(self.errors)}",
         ]
         if self.stats:
@@ -218,16 +221,18 @@ def run_sync(
         if c.stats and c.stats.input_tokens:
             result.stats.append(c.stats)
         processed_items.append((email.id, c.analysis.category.value))
-        if on_classified:
-            try:
-                on_classified(email, c)
-            except Exception as exc:
-                result.errors.append(f"{email.id}: on_classified hook failed: {exc}")
 
         a = c.analysis
         if a.category == Category.NOT_JOB_RELATED:
             result.ignored += 1
             continue
+
+        if on_classified and not dry_run:
+            try:
+                indexed = on_classified(email, c)
+                result.jd_chunks_indexed += indexed if isinstance(indexed, int) else 0
+            except Exception as exc:
+                result.errors.append(f"{email.id}: on_classified hook failed: {exc}")
 
         status = STATUS_BY_CATEGORY[a.category]
         date = iso_date_from_internal(email.internal_date_ms, settings.timezone)
