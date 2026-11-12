@@ -152,3 +152,17 @@ def test_backfill_repairs_only_obviously_wrong_company_names():
     assert [r.company for r in store.rows] == ["Labcorp", "Contoso", "Acme Robotics"]
     assert is_junk_company("System Administrator (do not reply)") and is_junk_company("")
     assert not is_junk_company("Lever Brothers Ltd")
+
+
+def test_backfill_still_covers_rows_matched_only_by_older_emails():
+    # Regression: 5 live legacy rows matched an older status email, were marked dirty
+    # without a status/summary, and were then skipped by the backfill.
+    legacy = ApplicationRow(company="Visa", role_title="", date_applied="2025-12-01", message_id="leg")
+    store = InMemoryStore([legacy], processed={"leg"})
+    msgs = [gmail_message("old-update", "Update", "b", day=0),  # 2025-10-09 < date_applied
+            gmail_message("leg", "Application received", "Thanks for applying")]
+    clf = FakeClassifier({"old-update": analysis(Category.STATUS_UPDATE, company="Visa", role=None),
+                          "leg": analysis(Category.APPLICATION_CONFIRMATION, company="Visa", role="Data Intern")})
+    res, store, _ = sync(msgs, {}, store=store, classifier=clf, backfill=True)
+    row = store.rows[0]
+    assert res.backfilled == 1 and row.status == "Applied" and row.summary

@@ -229,6 +229,7 @@ tracker/
   heuristics.py         keyword/regex classifier (fallback + eval baseline)
   pipeline.py           sync logic: dedupe, status tracking, backfill
   sheets_io.py          Google Sheets store (+ in-memory and dry-run stores)
+  audit.py              read-only sheet integrity audit
   schemas.py            Pydantic/dataclass types
   mcp_server.py         MCP server: Gmail + Sheets + RAG tools
   rag/                  job-description RAG: chunking, embeddings, Firestore/local stores, fetchers, CLI
@@ -242,6 +243,7 @@ eval/
   datasets/             synthetic labeled emails, JDs and retrieval queries
   REPORT.md             latest results
 deploy/                 setup_gcp.sh · deploy.sh · setup_github_cd.sh
+docs/                   postmortem of the first-sync incident
 Dockerfile              Cloud Run image
 tests/                  pytest suite with fake Gmail / Gemini / Sheets (no network)
 ```
@@ -293,6 +295,8 @@ All keys in `config.json` can be overridden with environment variables of the sa
 `Company` · `Role Title` · `Job ID` · `Date Applied` · `Gmail Thread URL` · `From` · `Subject` · `Message ID` · `Status` · `Summary` · `Location` · `Internship` · `Last Update` · `Classified By`
 
 The first eight match the original tracker, so existing sheets keep working.
+
+**Row integrity.** New rows are written at explicit positions, never through `values.append`, whose table detection inserted rows mid-sheet on the live sheet; see the [postmortem](docs/postmortem-2026-11-12-sheet-rows.md). Every update re-locates its row by Message ID right before writing, so sorting the sheet mid-sync is safe. `python -m tracker.audit [--against backup.json]` checks the sheet: unique Message IDs, every original row present, user columns attached to the same application.
 
 **Your own columns are safe.** Tracker columns are located by header name. Missing ones are appended to the right of whatever is already there, existing headers are never renamed, and updates write only tracker-owned cells (split into contiguous ranges around your columns). Columns you add by hand (e.g. *Technical Assessment*, *Interviews*, *Outcome*) are never overwritten, and the agent can read them (`user_columns` in `list_applications`).
 
