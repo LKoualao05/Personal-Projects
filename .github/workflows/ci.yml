@@ -19,3 +19,5 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run tests
         run: python -m pytest
+      - name: Offline eval (regex baseline + keyword embedder)
+        run: python -m eval.run_eval all --models heuristic --embedders hashing --no-save --fail-under 0.6

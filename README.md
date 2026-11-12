@@ -9,7 +9,7 @@ Scans Gmail for job-application emails, uses **Gemini on Vertex AI** to classify
 - [x] **Gemini on Vertex AI** classifies and summarizes applications
 - [x] **ADK agent** exposes Gmail and Sheets through an **MCP server**
 - [x] **RAG** over job descriptions with a vector store (Firestore vector search)
-- [ ] **Eval script** tracks accuracy, latency and cost per request
+- [x] **Eval script** tracks accuracy, latency and cost per request
 - [ ] Deployed on **Cloud Run**
 
 ## How it works
@@ -144,6 +144,27 @@ python -m tracker.rag ask "Which of my roles mention Kubernetes, and at what lev
 
 The agent gets two more MCP tools, `search_job_descriptions` and `add_job_description`, so you can ask it things like *"What skills do the roles I interviewed for have in common?"*
 
+## Evaluation
+
+`eval/run_eval.py` measures **accuracy, latency and cost per request** for any set of classifiers, and **retrieval quality** for any set of embedders. Results go to [`eval/REPORT.md`](eval/REPORT.md).
+
+```bash
+python -m eval.run_eval classify --models heuristic gemini-3.5-flash-lite gemini-3.8-flash gemini-3.5-flash
+python -m eval.run_eval retrieval --embedders hashing gemini-embedding-001
+python -m eval.run_eval all --fail-under 0.9          # exits 1 if any model scores below 90%
+```
+
+| Suite | Data | Metrics |
+|---|---|---|
+| Classification | 44 labeled emails across all 7 categories, including hard cases: ATS senders, LinkedIn alerts vs. confirmations, a credit-card "application received", a rejection that opens with "thank you for applying", a prompt-injection email | accuracy, macro-F1, per-category recall, job-vs-not-job accuracy, field accuracy (company / role / job ID / internship), latency mean / p50 / p95, tokens (input / output / thinking), **cost per request and per 1,000 emails** |
+| Retrieval | 8 job descriptions, 16 queries (half are paraphrases with no keyword overlap) | recall@1, recall@3, MRR, by query type, query latency, embedding cost |
+
+- **Synthetic data only.** Fictional companies and `.example` domains, so no real email ever enters the repo. A test enforces this.
+- **Cost** comes from token usage reported by the API × a dated price table (`tracker/pricing.py`) that handles introductory pricing windows and bills thinking tokens at the output rate. The daily sync report prints its estimated cost too.
+- **CI** runs the offline suites (regex baseline + keyword embedder) on every PR as a regression gate.
+
+Baseline (no LLM): regex heuristics reach **70.5% accuracy and 12% role-title accuracy**, and miss every status update. Keyword retrieval gets only **25% recall@1 on paraphrased queries**. Those are the numbers Gemini and the dense embeddings are measured against.
+
 ## Project layout
 
 ```
@@ -163,6 +184,11 @@ tracker/
 agents/tracker_agent/
   agent.py              ADK agent (root_agent) using the MCP server via McpToolset
   serve_mcp.py          the agent itself exposed as an MCP server
+  pricing.py            dated per-model token prices → cost per request
+eval/
+  run_eval.py           accuracy / latency / cost + retrieval eval harness
+  datasets/             synthetic labeled emails, JDs and retrieval queries
+  REPORT.md             latest results
 tests/                  pytest suite with fake Gmail / Gemini / Sheets (no network)
 ```
 
@@ -229,4 +255,4 @@ The first eight match the original tracker, so existing sheets keep working.
 ---
 
 **Created:** 2025-9-5
-**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server, RAG)
+**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server, RAG, eval harness)
