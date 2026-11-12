@@ -12,8 +12,10 @@ Tools
     classify_email       run the Gemini classifier on one email (read-only)
     list_applications    filtered rows from the tracker sheet (read-only)
     application_stats    funnel / response-rate stats (read-only)
+    search_job_descriptions  semantic search over indexed job descriptions (read-only)
     update_application   change status/summary of one row (writes the sheet)
     sync_applications    Gmail -> Gemini -> Sheets sync, dry-run by default
+    add_job_description  index a job description from a URL or text (writes the vector store)
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from .sheets_io import DryRunStore, TrackerStore
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
 WRITES_SHEET = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
-WRITE_TOOLS = frozenset({"update_application", "sync_applications"})
+WRITE_TOOLS = frozenset({"update_application", "sync_applications", "add_job_description"})
 
 INSTRUCTIONS = """\
 Tools over one user's job-application data. Gmail access is read-only; the only
@@ -78,11 +80,13 @@ class TrackerContext:
     """
 
     def __init__(self, settings: Settings, gmail: Any = None, store: Optional[TrackerStore] = None,
-                 classifier: Optional[EmailClassifier] = None):
+                 classifier: Optional[EmailClassifier] = None, jd_index: Any = None):
         self.settings = settings
         self._gmail = gmail
         self._store = store
         self._classifier = classifier
+        self._jd_index = jd_index
+        self._jd_index_built = jd_index is not None
         self.lock = threading.RLock()
 
     def _connect(self) -> None:
@@ -111,6 +115,17 @@ class TrackerContext:
         if self._classifier is None:
             self._classifier = make_classifier(self.settings, log=_stderr)
         return self._classifier
+
+    @property
+    def jd_index(self) -> Any:
+        if not self._jd_index_built:
+            from .rag import make_jd_index
+
+            self._jd_index = make_jd_index(self.settings, log=_stderr)
+            self._jd_index_built = True
+        if self._jd_index is None:
+            raise ValueError("Job-description RAG is not configured (set GCP_PROJECT and RAG_ENABLED=true).")
+        return self._jd_index
 
 
 def row_to_dict(r: ApplicationRow) -> dict[str, Any]:
@@ -249,6 +264,29 @@ def create_server(ctx: Optional[TrackerContext] = None, today: Callable[[], date
                               dry_run=dry_run, log=_stderr)
         return {"dry_run": dry_run, "report": result.report(), "changes": result.changes[:50],
                 "errors": result.errors[:10]}
+
+    @server.tool(annotations=READ_ONLY)
+    @_explain_errors
+    def search_job_descriptions(query: str, k: int = 5, company: str = "") -> dict[str, Any]:
+        """Semantic search over the job descriptions of roles the user applied to (RAG). Use for questions
+        about responsibilities, required skills, qualifications, tech stack or location of those roles.
+        Returns the best-matching excerpts with company, role, similarity score and source URL."""
+        from .rag.index import hit_to_dict
+
+        hits = ctx.jd_index.search(query, k=max(1, min(k, 20)), company=company)
+        return {"results": [hit_to_dict(h, i) for i, h in enumerate(hits, start=1)]}
+
+    @server.tool(annotations=WRITES_SHEET)
+    @_explain_errors
+    def add_job_description(company: str, role_title: str = "", url: str = "", text: str = "",
+                            job_id: str = "") -> dict[str, Any]:
+        """Index a job description for later search, from a job-board URL (Greenhouse, Lever, Workday,
+        LinkedIn or any page) or pasted text."""
+        if not url and not text:
+            raise ValueError("Provide a url or the job description text.")
+        index = ctx.jd_index
+        n = index.add_from_url(company, role_title, url, job_id) if url else index.add(company, role_title, text, job_id=job_id)
+        return {"company": company, "role_title": role_title, "chunks_indexed": n}
 
     return server
 

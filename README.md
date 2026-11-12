@@ -8,7 +8,7 @@ Scans Gmail for job-application emails, uses **Gemini on Vertex AI** to classify
 
 - [x] **Gemini on Vertex AI** classifies and summarizes applications
 - [x] **ADK agent** exposes Gmail and Sheets through an **MCP server**
-- [ ] **RAG** over job descriptions with a vector store (Firestore vector search)
+- [x] **RAG** over job descriptions with a vector store (Firestore vector search)
 - [ ] **Eval script** tracks accuracy, latency and cost per request
 - [ ] Deployed on **Cloud Run**
 
@@ -68,8 +68,10 @@ Gmail and Sheets are exposed as **MCP tools** by `tracker/mcp_server.py` (MCP Py
 | `classify_email` | read | Run the Gemini classifier on one email |
 | `list_applications` | read | Sheet rows filtered by company / status / date / internship |
 | `application_stats` | read | Totals by status, response rate, per-month counts, top companies |
+| `search_job_descriptions` | read | Semantic search over indexed job descriptions (RAG) |
 | `update_application` | **write** | Change status/summary of one row |
 | `sync_applications` | **write** | Gmail → Gemini → Sheets sync (`dry_run=true` by default) |
+| `add_job_description` | **write** | Index a JD from a job-board URL or pasted text |
 
 Example questions: *"Which companies have I heard back from this month?"*, *"Do I have any assessments with deadlines coming up?"*, *"Check for new application emails"*, *"Mark the Globex application as Interview."*
 
@@ -104,6 +106,44 @@ Claude Desktop / Claude Code config (`.mcp.json`):
 - The agent exposed over MCP (`serve_mcp`) has the write tools filtered out, because an MCP host can't answer ADK confirmation prompts.
 - Both the agent and the server instructions treat email bodies as untrusted. Expected failures (expired token, bad status, unknown row) come back as readable tool errors.
 
+## RAG over job descriptions
+
+Confirmation emails rarely say what the job actually involves, so the tracker indexes the **job description** behind each application and makes it searchable by meaning.
+
+```
+application email ─► job-board link? ─► public posting API ─┐
+                    (Greenhouse, Lever, Workday, LinkedIn)  │
+                 └► email body reads like a JD? ────────────┤
+manual: URL or pasted text ─────────────────────────────────┤
+                                                             ▼
+             paragraph-aware chunks (1,200 chars, 150 overlap, "Company — Role" header)
+                                                             ▼
+             gemini-embedding-001 on Vertex AI (768-d, RETRIEVAL_DOCUMENT)
+                                                             ▼
+             Firestore native vector search (KNN, cosine)  ◄── query (RETRIEVAL_QUERY)
+                                                             ▼
+             top-k excerpts ─► Gemini grounded answer with [n] citations
+```
+
+- **Ingestion runs during every sync.** Each new job-related email is checked for a job-board link, and only links matching known job-board URL patterns are fetched. Tracking and redirect links (which can carry personal tokens) are never followed. Already-indexed jobs are skipped.
+- **Why Firestore:** it's serverless, pay-per-use and scales to zero like Cloud Run. At a few hundred postings it costs pennies a month. Vertex AI Vector Search would need an always-on endpoint.
+- **Offline mode:** `VECTOR_STORE=local EMBEDDING_MODEL=hashing` uses a JSON file and a bag-of-words embedder with no API calls (the tests use this).
+
+```bash
+# one-time Firestore setup
+gcloud services enable firestore.googleapis.com
+gcloud firestore databases create --location=nam5
+gcloud firestore indexes composite create --collection-group=job_description_chunks \
+  --query-scope=COLLECTION --field-config=field-path=embedding,vector-config='{"dimension":"768","flat":"{}"}'
+
+python -m tracker.rag backfill                       # index JDs for applications already in the sheet
+python -m tracker.rag add --company Acme --role "ML Intern" --url https://boards.greenhouse.io/acme/jobs/123
+python -m tracker.rag search "computer vision with PyTorch"
+python -m tracker.rag ask "Which of my roles mention Kubernetes, and at what level?"
+```
+
+The agent gets two more MCP tools, `search_job_descriptions` and `add_job_description`, so you can ask it things like *"What skills do the roles I interviewed for have in common?"*
+
 ## Project layout
 
 ```
@@ -118,7 +158,8 @@ tracker/
   pipeline.py           sync logic: dedupe, status tracking, backfill
   sheets_io.py          Google Sheets store (+ in-memory and dry-run stores)
   schemas.py            Pydantic/dataclass types
-  mcp_server.py         MCP server: Gmail + Sheets tools
+  mcp_server.py         MCP server: Gmail + Sheets + RAG tools
+  rag/                  job-description RAG: chunking, embeddings, Firestore/local stores, fetchers, CLI
 agents/tracker_agent/
   agent.py              ADK agent (root_agent) using the MCP server via McpToolset
   serve_mcp.py          the agent itself exposed as an MCP server
@@ -162,6 +203,10 @@ All keys in `config.json` can be overridden with environment variables of the sa
 | `AGENT_MODEL` | `gemini-3.5-flash` | Model for the ADK agent |
 | `AGENT_CONFIRM_WRITES` | `true` | Require confirmation before sheet writes |
 | `TRACKER_MCP_URL` | *(stdio)* | Use a remote MCP server over streamable HTTP |
+| `RAG_ENABLED` | `true` | Index job descriptions during sync |
+| `EMBEDDING_MODEL` | `gemini-embedding-001` | `hashing` = offline embedder |
+| `EMBEDDING_DIMS` | `768` | Must match the Firestore vector index |
+| `VECTOR_STORE` | `firestore` | `local` = JSON file (`LOCAL_VECTOR_PATH`) |
 
 ## Columns written to `Applications`
 
@@ -182,4 +227,4 @@ The first eight match the original tracker, so existing sheets keep working. The
 ---
 
 **Created:** 2025-9-5
-**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server)
+**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server, RAG)
