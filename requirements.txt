@@ -11,3 +11,5 @@ google-adk==2.14.0
 mcp==2.3.0
 google-cloud-firestore==2.34.1
 httpx==0.28.1
+fastapi==0.162.5
+uvicorn==0.54.0

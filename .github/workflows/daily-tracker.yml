@@ -1,10 +1,10 @@
 name: Daily Gmail Internship Tracker
 
+# Manual fallback only. The daily run is Cloud Scheduler -> Cloud Run
+# (deploy/deploy.sh), which uses Gemini. Keeping one scheduled writer avoids
+# two jobs updating the sheet at once.
 on:
-  schedule:
-    # Run daily at 9 AM EST (2 PM UTC)
-    - cron: '0 14 * * *'
-  workflow_dispatch: # Allow manual triggering
+  workflow_dispatch:
 
 jobs:
   track-applications:

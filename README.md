@@ -10,7 +10,7 @@ Scans Gmail for job-application emails, uses **Gemini on Vertex AI** to classify
 - [x] **ADK agent** exposes Gmail and Sheets through an **MCP server**
 - [x] **RAG** over job descriptions with a vector store (Firestore vector search)
 - [x] **Eval script** tracks accuracy, latency and cost per request
-- [ ] Deployed on **Cloud Run**
+- [x] Deployed on **Cloud Run**
 
 ## How it works
 
@@ -165,6 +165,41 @@ python -m eval.run_eval all --fail-under 0.9          # exits 1 if any model sco
 
 Baseline (no LLM): regex heuristics reach **70.5% accuracy and 12% role-title accuracy**, and miss every status update. Keyword retrieval gets only **25% recall@1 on paraphrased queries**. Those are the numbers Gemini and the dense embeddings are measured against.
 
+## Deployment (Cloud Run)
+
+One **private** Cloud Run service runs everything:
+
+```
+                     ┌──────────────────── Cloud Run: gmail-tracker (IAM-only, max 1 instance) ─────────────────────┐
+Cloud Scheduler ───► │ POST /tasks/sync   Gmail → Gemini → Sheets + JD indexing (≤500 emails/run, single writer) │
+ (daily, OIDC)       │ /dev-ui, /run_sse  ADK agent API + dev UI ──stdio──► tracker MCP server                    │
+you (gcloud proxy) ► │ /mcp/              tracker MCP server (streamable HTTP) for any MCP client                 │
+                     │ /healthz                                                                                    │
+                     └──────┬──────────────────┬───────────────────────┬─────────────────────┬────────────────────┘
+                            ▼                  ▼                       ▼                     ▼
+                     Secret Manager       Vertex AI              Firestore             Gmail / Sheets
+                     (OAuth token,        (Gemini + embeddings,  (vector search)       APIs (user OAuth)
+                      mounted read-only)   service account)
+```
+
+- **Private by default.** `--no-allow-unauthenticated` means every request needs a Google identity with `run.invoker`: your account through `gcloud run services proxy`, and the scheduler's service account through an OIDC token.
+- **Least privilege.** The runtime service account has only `aiplatform.user`, `datastore.user`, `logging.logWriter`, and access to the single secret. Gmail/Sheets access uses your OAuth token from Secret Manager, which is mounted read-only and refreshed in memory.
+- **Scales to zero.** With no minimum instances, it costs nothing while idle. Firestore and Vertex AI are pay-per-use.
+- **Single writer.** `max-instances=1` plus an in-process lock (a second concurrent sync gets `409`). Each scheduled run handles at most 500 emails, so a big backlog is worked through over several days within Cloud Scheduler's 30-minute deadline.
+- **CI/CD.** Every PR runs tests plus the offline eval. Once `deploy/setup_github_cd.sh` has run, each merge to `main` deploys automatically: GitHub authenticates through **Workload Identity Federation** (no service-account keys), only from `main` of this repo.
+
+```bash
+./deploy/setup_gcp.sh        # once: APIs, service account, Firestore + vector index, token → Secret Manager
+./deploy/deploy.sh           # build (Cloud Build) + deploy + daily Cloud Scheduler job
+./deploy/setup_github_cd.sh  # optional: keyless GitHub → Cloud Run deploys on merge
+
+gcloud run services proxy gmail-tracker --region us-central1 --port 8080
+open http://localhost:8080/dev-ui/                                   # chat with the agent
+curl -X POST 'http://localhost:8080/tasks/sync?dry_run=true&limit=20' # preview a sync
+```
+
+Run the service locally with `uvicorn tracker.server:app --port 8080`.
+
 ## Project layout
 
 ```
@@ -185,10 +220,13 @@ agents/tracker_agent/
   agent.py              ADK agent (root_agent) using the MCP server via McpToolset
   serve_mcp.py          the agent itself exposed as an MCP server
   pricing.py            dated per-model token prices → cost per request
+  server.py             Cloud Run app: ADK API + dev UI, /mcp, /tasks/sync, /healthz
 eval/
   run_eval.py           accuracy / latency / cost + retrieval eval harness
   datasets/             synthetic labeled emails, JDs and retrieval queries
   REPORT.md             latest results
+deploy/                 setup_gcp.sh · deploy.sh · setup_github_cd.sh
+Dockerfile              Cloud Run image
 tests/                  pytest suite with fake Gmail / Gemini / Sheets (no network)
 ```
 
@@ -248,11 +286,13 @@ The first eight match the original tracker, so existing sheets keep working.
 - Email content is passed to Gemini as untrusted data, and the system prompt tells the model to ignore any instructions inside it. Output is constrained to a JSON schema.
 - `credentials.json` and `token.json` are git-ignored.
 
-## Run daily (GitHub Actions)
+## GitHub Actions
 
-`.github/workflows/daily-tracker.yml` runs the tracker every day at 9 AM ET with the heuristic classifier (the runner has no GCP credentials). Add the `GOOGLE_OAUTH_TOKEN_JSON` and `GOOGLE_CREDENTIALS_JSON` secrets (the contents of `token.json` and `credentials.json`). The Cloud Run deployment (see roadmap) replaces this with a Gemini-powered scheduled job.
+- `ci.yml`: tests + offline eval on every PR and push to `main`.
+- `deploy.yml`: test → build → push to Artifact Registry → deploy to Cloud Run on every push to `main` (active once `setup_github_cd.sh` has run).
+- `daily-tracker.yml`: **manual fallback only** (heuristic classifier, needs the `GOOGLE_OAUTH_TOKEN_JSON` / `GOOGLE_CREDENTIALS_JSON` secrets). The daily run is now Cloud Scheduler → Cloud Run.
 
 ---
 
 **Created:** 2025-9-5
-**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server, RAG, eval harness)
+**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI, ADK agent + MCP server, RAG, eval harness, Cloud Run)
