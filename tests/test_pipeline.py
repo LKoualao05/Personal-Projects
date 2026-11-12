@@ -1,5 +1,5 @@
 from tracker.config import Settings
-from tracker.pipeline import find_matching_application, normalize_company, role_similarity, run_sync
+from tracker.pipeline import find_matching_application, is_junk_company, normalize_company, role_similarity, run_sync
 from tracker.schemas import ApplicationRow, Category
 from tracker.sheets_io import DryRunStore, InMemoryStore
 
@@ -137,3 +137,18 @@ def test_company_normalization_and_matching():
     assert find_matching_application(rows, analysis(Category.REJECTION, job_id="r-7", role=None)).role_title == "SWE Intern"
     assert find_matching_application(rows, analysis(Category.REJECTION, role="Data Intern")).job_id == "R-9"
     assert find_matching_application(rows, analysis(Category.REJECTION, company="Other")) is None
+
+
+def test_backfill_repairs_only_obviously_wrong_company_names():
+    rows = [ApplicationRow(company="labcorp@myworkday.com", message_id="a"),
+            ApplicationRow(company="LinkedIn", message_id="b"),
+            ApplicationRow(company="Acme Robotics", message_id="c")]  # possibly hand-corrected: keep
+    store = InMemoryStore(rows, processed={"a", "b", "c"})
+    msgs = [gmail_message(m, "s", "b") for m in "abc"]
+    clf = FakeClassifier({"a": analysis(Category.APPLICATION_CONFIRMATION, company="Labcorp"),
+                          "b": analysis(Category.APPLICATION_CONFIRMATION, company="Contoso"),
+                          "c": analysis(Category.APPLICATION_CONFIRMATION, company="Acme")})
+    sync(msgs, {}, store=store, classifier=clf, backfill=True)
+    assert [r.company for r in store.rows] == ["Labcorp", "Contoso", "Acme Robotics"]
+    assert is_junk_company("System Administrator (do not reply)") and is_junk_company("")
+    assert not is_junk_company("Lever Brothers Ltd")

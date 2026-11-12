@@ -212,7 +212,9 @@ All keys in `config.json` can be overridden with environment variables of the sa
 
 `Company` · `Role Title` · `Job ID` · `Date Applied` · `Gmail Thread URL` · `From` · `Subject` · `Message ID` · `Status` · `Summary` · `Location` · `Internship` · `Last Update` · `Classified By`
 
-The first eight match the original tracker, so existing sheets keep working. The new columns are added to the right.
+The first eight match the original tracker, so existing sheets keep working.
+
+**Your own columns are safe.** Tracker columns are located by header name. Missing ones are appended to the right of whatever is already there, existing headers are never renamed, and updates write only tracker-owned cells (split into contiguous ranges around your columns). Columns you add by hand (e.g. *Technical Assessment*, *Interviews*, *Outcome*) are never overwritten, and the agent can read them (`user_columns` in `list_applications`).
 
 ## Security notes
 
