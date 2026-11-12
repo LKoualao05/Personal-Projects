@@ -295,8 +295,9 @@ def run_sync(
 
     if dry_run:
         log("Dry run: no changes written.")
-    store.append_applications(new_rows)
+    # Update existing rows before adding new ones so positions read at the start stay valid.
     store.update_applications(list(dirty.values()))
+    store.append_applications(new_rows)
     store.mark_processed(processed_items)
     if new_rows or dirty:
         store.refresh_summary()
