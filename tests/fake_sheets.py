@@ -36,7 +36,7 @@ class _Exec:
     def __init__(self, fn):
         self.fn = fn
 
-    def execute(self):
+    def execute(self, num_retries: int = 0):
         return self.fn()
 
 

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Protocol
 
 from .config import Settings
+from .gmail_client import API_RETRIES
 from .schemas import APPLICATION_HEADERS, STATUS_ORDER, ApplicationRow
 
 PROCESSED_HEADERS = ["Message ID", "Category", "Processed At"]
@@ -76,11 +77,11 @@ class GoogleSheetsStore:
         return self.svc.spreadsheets().values()
 
     def _tab_props(self) -> dict[str, dict]:
-        meta = self.svc.spreadsheets().get(spreadsheetId=self.sid).execute()
+        meta = self.svc.spreadsheets().get(spreadsheetId=self.sid).execute(num_retries=API_RETRIES)
         return {s["properties"]["title"]: s["properties"] for s in meta["sheets"]}
 
     def _read_header(self, title: str) -> list[str]:
-        res = self._values().get(spreadsheetId=self.sid, range=f"{title}!1:1").execute()
+        res = self._values().get(spreadsheetId=self.sid, range=f"{title}!1:1").execute(num_retries=API_RETRIES)
         rows = res.get("values", [])
         return [str(h).strip() for h in rows[0]] if rows else []
 
@@ -94,7 +95,7 @@ class GoogleSheetsStore:
         if title not in props:
             self.svc.spreadsheets().batchUpdate(
                 spreadsheetId=self.sid, body={"requests": [{"addSheet": {"properties": {"title": title}}}]}
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
             props = self._tab_props()
         current = self._read_header(title)
         if overwrite:
@@ -107,12 +108,12 @@ class GoogleSheetsStore:
             have = props[title].get("gridProperties", {}).get("columnCount", 26)
             if len(final) > have:
                 self.svc.spreadsheets().batchUpdate(spreadsheetId=self.sid, body={"requests": [{"appendDimension": {
-                    "sheetId": props[title]["sheetId"], "dimension": "COLUMNS", "length": len(final) - have}}]}).execute()
+                    "sheetId": props[title]["sheetId"], "dimension": "COLUMNS", "length": len(final) - have}}]}).execute(num_retries=API_RETRIES)
             first_new = 0 if overwrite else len(current)
             self._values().update(
                 spreadsheetId=self.sid, range=f"{title}!{_col(first_new + 1)}1", valueInputOption="RAW",
                 body={"values": [final[first_new:]]},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
         return final
 
     def header(self) -> list[str]:
@@ -137,7 +138,7 @@ class GoogleSheetsStore:
         self._ensure_tab(self.processed_tab, PROCESSED_HEADERS)
 
     def processed_ids(self) -> set[str]:
-        res = self._values().get(spreadsheetId=self.sid, range=f"{self.processed_tab}!A2:A").execute()
+        res = self._values().get(spreadsheetId=self.sid, range=f"{self.processed_tab}!A2:A").execute(num_retries=API_RETRIES)
         return {v[0] for v in res.get("values", []) if v}
 
     def mark_processed(self, items: Iterable[tuple[str, str]]) -> None:
@@ -147,12 +148,12 @@ class GoogleSheetsStore:
             self._values().append(
                 spreadsheetId=self.sid, range=f"{self.processed_tab}!A:C", valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS", body={"values": values},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
 
     def list_applications(self) -> list[ApplicationRow]:
         header = self.header() or list(APPLICATION_HEADERS)
         last = _col(max(len(header), 1))
-        res = self._values().get(spreadsheetId=self.sid, range=f"{self.app_tab}!A2:{last}").execute()
+        res = self._values().get(spreadsheetId=self.sid, range=f"{self.app_tab}!A2:{last}").execute(num_retries=API_RETRIES)
         rows = []
         for i, vals in enumerate(res.get("values", []), start=2):
             if any(str(v).strip() for v in vals):
@@ -171,7 +172,7 @@ class GoogleSheetsStore:
         self._values().append(
             spreadsheetId=self.sid, range=f"{self.app_tab}!A:{_col(len(header))}", valueInputOption="RAW",
             insertDataOption="INSERT_ROWS", body={"values": [r.to_row(header) for r in rows]},
-        ).execute()
+        ).execute(num_retries=API_RETRIES)
 
     def update_applications(self, rows: list[ApplicationRow]) -> None:
         rows = [r for r in rows if r.row_number]
@@ -186,17 +187,17 @@ class GoogleSheetsStore:
                     "range": f"{self.app_tab}!{_col(start + 1)}{r.row_number}:{_col(end + 1)}{r.row_number}",
                     "values": [values[start:end + 1]],
                 })
-        self._values().batchUpdate(spreadsheetId=self.sid, body={"valueInputOption": "RAW", "data": data}).execute()
+        self._values().batchUpdate(spreadsheetId=self.sid, body={"valueInputOption": "RAW", "data": data}).execute(num_retries=API_RETRIES)
 
     def refresh_summary(self) -> None:
         table = summarize(self.list_applications())
         self._ensure_tab(self.summary_tab, [str(h) for h in table[0]], overwrite=True)
-        self._values().clear(spreadsheetId=self.sid, range=f"{self.summary_tab}!A2:Z").execute()
+        self._values().clear(spreadsheetId=self.sid, range=f"{self.summary_tab}!A2:Z").execute(num_retries=API_RETRIES)
         if len(table) > 1:
             self._values().update(
                 spreadsheetId=self.sid, range=f"{self.summary_tab}!A2", valueInputOption="RAW",
                 body={"values": table[1:]},
-            ).execute()
+            ).execute(num_retries=API_RETRIES)
 
 
 class InMemoryStore:

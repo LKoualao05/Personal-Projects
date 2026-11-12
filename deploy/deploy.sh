@@ -43,7 +43,12 @@ JOB_ARGS=(--location "${REGION}" --schedule "${SCHEDULE}" --time-zone "${TZ_NAME
 if gcloud scheduler jobs describe gmail-tracker-daily --location "${REGION}" >/dev/null 2>&1; then
   gcloud scheduler jobs update http gmail-tracker-daily "${JOB_ARGS[@]}" --quiet >/dev/null
 else
-  gcloud scheduler jobs create http gmail-tracker-daily "${JOB_ARGS[@]}" --quiet >/dev/null
+  # A just-created service account can take a minute to propagate (NOT_FOUND).
+  for attempt in 1 2 3 4 5 6; do
+    gcloud scheduler jobs create http gmail-tracker-daily "${JOB_ARGS[@]}" --quiet >/dev/null && break
+    [ "${attempt}" = 6 ] && exit 1
+    echo "   scheduler not ready yet (attempt ${attempt}); retrying in 20s"; sleep 20
+  done
 fi
 
 cat <<EOF

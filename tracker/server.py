@@ -3,7 +3,8 @@
     uvicorn tracker.server:app --port 8080
 
 Routes
-    GET  /healthz           liveness + config summary
+    GET  /tracker/status    config summary (also /healthz locally; Cloud Run's front end
+                            reserves paths ending in "z", and ADK already serves /health)
     POST /tasks/sync        Gmail -> Gemini -> Sheets (+ JD indexing); called daily by Cloud Scheduler
     /mcp/                   tracker MCP server over streamable HTTP (stateless, JSON responses)
     /dev-ui/, /run, /run_sse, /apps/...   ADK agent API and dev UI (google.adk get_fast_api_app)
@@ -91,6 +92,7 @@ def create_app(settings: Optional[Settings] = None, *, mcp_context: Any = None,
 
     sync_lock = threading.Lock()
 
+    @app.get("/tracker/status")
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         return {"ok": True, "version": __version__, "llm": settings.llm_enabled, "model": settings.gemini_model,

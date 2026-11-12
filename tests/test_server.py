@@ -34,8 +34,9 @@ def test_healthz_and_sync_endpoint():
         return {"ok": True, **kw}
 
     with TestClient(create_app(SETTINGS, mcp_context=ctx(), sync_runner=runner, with_agent=False)) as client:
-        h = client.get("/healthz").json()
+        h = client.get("/tracker/status").json()
         assert h["ok"] and h["token_file_present"] is False
+        assert client.get("/healthz").json() == h
         r = client.post("/tasks/sync?dry_run=true&limit=5")
         assert r.status_code == 200 and calls == [{"dry_run": True, "limit": 5, "backfill": False}]
         assert client.post("/tasks/sync").json()["limit"] == 500  # default cap per scheduled run
@@ -101,5 +102,6 @@ def test_mcp_over_streamable_http(live_server):
 def test_adk_agent_api_is_mounted():
     with TestClient(create_app(SETTINGS, mcp_context=ctx(), sync_runner=lambda s, **k: {})) as client:
         assert client.get("/list-apps").json() == ["tracker_agent"]
-        assert client.get("/healthz").status_code == 200
+        assert client.get("/tracker/status").json()["ok"] is True  # not shadowed by ADK's routes
+        assert client.get("/health").status_code == 200           # ADK's own liveness route
         assert client.get("/dev-ui/").status_code == 200

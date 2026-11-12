@@ -12,6 +12,8 @@ Scans Gmail for job-application emails, uses **Gemini on Vertex AI** to classify
 - [x] **Eval script** tracks accuracy, latency and cost per request
 - [x] Deployed on **Cloud Run**
 
+**Status:** live on Cloud Run (private, IAM-only) since 2026-11-12. Cloud Scheduler runs the Gemini sync every day at 9 AM ET, and the ADK agent and MCP server are reachable through `gcloud run services proxy`.
+
 ## How it works
 
 ```
@@ -163,7 +165,21 @@ python -m eval.run_eval all --fail-under 0.9          # exits 1 if any model sco
 - **Cost** comes from token usage reported by the API × a dated price table (`tracker/pricing.py`) that handles introductory pricing windows and bills thinking tokens at the output rate. The daily sync report prints its estimated cost too.
 - **CI** runs the offline suites (regex baseline + keyword embedder) on every PR as a regression gate.
 
-Baseline (no LLM): regex heuristics reach **70.5% accuracy and 12% role-title accuracy**, and miss every status update. Keyword retrieval gets only **25% recall@1 on paraphrased queries**. Those are the numbers Gemini and the dense embeddings are measured against.
+**Live results** ([full report](eval/REPORT.md)):
+
+| | Accuracy | Role extraction | p50 latency | Cost / 1k emails |
+|---|---|---|---|---|
+| Regex heuristics (old tracker) | 70.5% | 12.1% | — | $0 |
+| **`gemini-3.5-flash-lite`** (default) | **100%** | **100%** | **1.0 s** | **$0.52** |
+| `gemini-3.8-flash` | 100% | 100% | 3.4 s | $1.66 |
+| `gemini-3.5-flash` | 100% | 100% | 4.5 s | $6.32 |
+
+| Retrieval | Recall@1 | Recall@1 on paraphrases |
+|---|---|---|
+| Keyword (hashing) | 56% | 25% |
+| **`gemini-embedding-001`** | **100%** | **100%** |
+
+The eval also caught a real bug: thinking tokens count toward `max_output_tokens`, so `gemini-3.5-flash` truncated its JSON on one email. It's fixed and has a regression test.
 
 ## Deployment (Cloud Run)
 
@@ -174,7 +190,7 @@ One **private** Cloud Run service runs everything:
 Cloud Scheduler ───► │ POST /tasks/sync   Gmail → Gemini → Sheets + JD indexing (≤500 emails/run, single writer) │
  (daily, OIDC)       │ /dev-ui, /run_sse  ADK agent API + dev UI ──stdio──► tracker MCP server                    │
 you (gcloud proxy) ► │ /mcp/              tracker MCP server (streamable HTTP) for any MCP client                 │
-                     │ /healthz                                                                                    │
+                     │ /tracker/status    config + token check   (ADK serves /health)                             │
                      └──────┬──────────────────┬───────────────────────┬─────────────────────┬────────────────────┘
                             ▼                  ▼                       ▼                     ▼
                      Secret Manager       Vertex AI              Firestore             Gmail / Sheets
@@ -220,7 +236,7 @@ agents/tracker_agent/
   agent.py              ADK agent (root_agent) using the MCP server via McpToolset
   serve_mcp.py          the agent itself exposed as an MCP server
   pricing.py            dated per-model token prices → cost per request
-  server.py             Cloud Run app: ADK API + dev UI, /mcp, /tasks/sync, /healthz
+  server.py             Cloud Run app: ADK API + dev UI, /mcp, /tasks/sync, /tracker/status
 eval/
   run_eval.py           accuracy / latency / cost + retrieval eval harness
   datasets/             synthetic labeled emails, JDs and retrieval queries

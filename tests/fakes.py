@@ -33,7 +33,7 @@ class _Exec:
     def __init__(self, value: Any):
         self.value = value
 
-    def execute(self) -> Any:
+    def execute(self, num_retries: int = 0) -> Any:
         return self.value
 
 
