@@ -44,6 +44,22 @@ def normalize_company(name: Optional[str]) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_PLATFORMS = {
+    "linkedin", "indeed", "handshake", "workday", "myworkday", "greenhouse", "lever", "icims", "smartrecruiters",
+    "ashby", "glassdoor", "ziprecruiter", "jobvite", "taleo", "successfactors", "system administrator",
+}
+
+
+def is_junk_company(name: Optional[str]) -> bool:
+    """True for company values the old regex tracker got obviously wrong
+    (email addresses, job platforms, no-reply senders). Only these are replaced
+    during backfill, so names the user corrected by hand are kept."""
+    n = (name or "").strip().lower()
+    if not n or "@" in n or "reply" in n:
+        return True
+    return re.sub(r"[^a-z ]+", " ", n).strip() in _PLATFORMS
+
+
 def _tokens(s: Optional[str]) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]+", (s or "").lower()) if t not in {"the", "a", "of", "and", "for", "to"}}
 
@@ -312,6 +328,8 @@ def _backfill(settings, gmail, rows, dirty, classifier, result, limit, log) -> N
             row.status = row.status or NEEDS_REVIEW_STATUS
         else:
             row.status = row.status or STATUS_BY_CATEGORY[a.category]
+            if a.company and is_junk_company(row.company):
+                row.company = a.company
             _fill_blanks(row, a)
         dirty[row.row_number] = row
         result.backfilled += 1

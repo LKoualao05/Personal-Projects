@@ -102,8 +102,12 @@ class ApplicationRow:
     classified_by: str = ""
     # 1-based sheet row number; None for rows not yet written.
     row_number: Optional[int] = None
+    # Columns the user added to the sheet themselves (header -> value). The
+    # tracker reads them (the agent can see them) but never writes them.
+    extra: dict[str, str] = field(default_factory=dict)
 
     def to_values(self) -> list[str]:
+        """Tracker-owned values in ``APPLICATION_HEADERS`` order."""
         return [
             self.company, self.role_title, self.job_id, self.date_applied, self.thread_url,
             self.sender, self.subject, self.message_id, self.status, self.summary,
@@ -114,3 +118,15 @@ class ApplicationRow:
     def from_values(cls, values: list[str], row_number: Optional[int] = None) -> "ApplicationRow":
         padded = list(values) + [""] * (len(APPLICATION_HEADERS) - len(values))
         return cls(*[str(v) for v in padded[: len(APPLICATION_HEADERS)]], row_number=row_number)
+
+    def to_row(self, header: list[str]) -> list[str]:
+        """Values aligned to an arbitrary sheet header (user columns from ``extra``)."""
+        owned = dict(zip(APPLICATION_HEADERS, self.to_values()))
+        return [owned[h] if h in owned else self.extra.get(h, "") for h in header]
+
+    @classmethod
+    def from_row(cls, header: list[str], values: list[str], row_number: Optional[int] = None) -> "ApplicationRow":
+        cells = {h: (str(values[i]) if i < len(values) else "") for i, h in enumerate(header) if h}
+        row = cls.from_values([cells.get(h, "") for h in APPLICATION_HEADERS], row_number)
+        row.extra = {h: v for h, v in cells.items() if h not in APPLICATION_HEADERS and v.strip()}
+        return row

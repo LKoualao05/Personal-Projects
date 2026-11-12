@@ -134,6 +134,8 @@ def row_to_dict(r: ApplicationRow) -> dict[str, Any]:
         "status": r.status or "Applied", "date_applied": r.date_applied, "last_update": r.last_update,
         "summary": r.summary, "location": r.location, "internship": r.internship, "gmail_url": r.thread_url,
         "message_id": r.message_id,
+        # Columns the user maintains by hand (e.g. "Technical Assessment", "Outcome").
+        "user_columns": r.extra,
     }
 
 
