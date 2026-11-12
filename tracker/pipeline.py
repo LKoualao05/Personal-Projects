@@ -306,7 +306,9 @@ def run_sync(
 
 def _backfill(settings, gmail, rows, dirty, classifier, result, limit, log) -> None:
     """Classify existing rows (from the old regex tracker) that have no summary."""
-    todo = [r for r in rows if not r.summary and r.message_id and r.row_number not in dirty]
+    # Rows touched by this run's status updates already carry a summary; a row that only
+    # matched an *older* email is still unsummarized and must not be skipped.
+    todo = [r for r in rows if not r.summary and r.message_id]
     if limit is not None:
         todo = todo[:limit]
     if not todo:

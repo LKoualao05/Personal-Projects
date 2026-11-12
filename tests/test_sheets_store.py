@@ -158,3 +158,20 @@ def test_append_is_idempotent_and_grows_the_grid():
     store.append_applications(rows)  # retry after a crash must not duplicate
     assert [r.message_id for r in store.list_applications()] == [f"m{i}" for i in range(5)]
     assert svc.row_counts["Applications"] >= 6
+
+
+def test_audit_detects_duplicates_missing_rows_and_moved_user_columns():
+    from tracker.audit import audit_rows
+
+    backup = [LEGACY + USER_COLS,
+              ["Acme", "", "", "", "", "", "", "m1", "Yes", "No", "Rejected"],
+              ["Globex", "", "", "", "", "", "", "m2"]]
+    good = [ApplicationRow(company="Acme", message_id="m1", status="Rejected",
+                           extra={"Technical Assessment": "Yes", "Interviews": "No", "Outcome": "Rejected"}),
+            ApplicationRow(company="Globex", message_id="m2", status="Applied")]
+    assert audit_rows(good, backup)["ok"]
+    bad = [ApplicationRow(company="Acme", message_id="m1", status="Rejected"),  # user columns detached
+           ApplicationRow(company="Acme", message_id="m1", status="")]          # duplicate; m2 missing
+    r = audit_rows(bad, backup)
+    assert not r["ok"] and r["duplicate_message_ids"] == ["m1"] and r["original_rows_missing"] == ["m2"]
+    assert r["user_columns_changed"] == ["m1"] and r["rows_without_status"] == 1
