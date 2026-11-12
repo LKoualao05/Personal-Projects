@@ -1,0 +1,16 @@
+{"query": "roles that use PyTorch for computer vision", "expected_job_id": "ml", "kind": "keyword"}
+{"query": "React TypeScript accessibility", "expected_job_id": "fe", "kind": "keyword"}
+{"query": "SQL and Tableau dashboards", "expected_job_id": "da", "kind": "keyword"}
+{"query": "DCF valuation models in Excel", "expected_job_id": "fin", "kind": "keyword"}
+{"query": "Kubernetes on-call rotation", "expected_job_id": "sre", "kind": "keyword"}
+{"query": "Figma prototypes and usability testing", "expected_job_id": "ux", "kind": "keyword"}
+{"query": "stochastic calculus and derivatives pricing", "expected_job_id": "quant", "kind": "keyword"}
+{"query": "C firmware for ARM microcontrollers", "expected_job_id": "emb", "kind": "keyword"}
+{"query": "teach neural networks to recognize flaws in photos of products", "expected_job_id": "ml", "kind": "paraphrase"}
+{"query": "making websites that work well for people with disabilities", "expected_job_id": "fe", "kind": "paraphrase"}
+{"query": "figuring out whether a product experiment actually moved the numbers", "expected_job_id": "da", "kind": "paraphrase"}
+{"query": "helping advise companies that are buying other companies", "expected_job_id": "fin", "kind": "paraphrase"}
+{"query": "keep services running when they break at 3am", "expected_job_id": "sre", "kind": "paraphrase"}
+{"query": "talking to users and sketching app screens", "expected_job_id": "ux", "kind": "paraphrase"}
+{"query": "finding patterns in market prices to make trades", "expected_job_id": "quant", "kind": "paraphrase"}
+{"query": "low-level code for chips inside battery powered gadgets", "expected_job_id": "emb", "kind": "paraphrase"}

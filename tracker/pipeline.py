@@ -135,7 +135,12 @@ class SyncResult:
             f"  errors:              {len(self.errors)}",
         ]
         if self.stats:
-            lines.append(f"  LLM tokens in/out:   {tokens_in:,} / {tokens_out:,}  (avg latency {avg_latency:.2f}s)")
+            from .pricing import stats_cost_usd
+
+            costs = [stats_cost_usd(s) for s in self.stats]
+            known = [c for c in costs if c is not None]
+            cost = f", est. cost ${sum(known):.4f}" if known else ""
+            lines.append(f"  LLM tokens in/out:   {tokens_in:,} / {tokens_out:,}  (avg latency {avg_latency:.2f}s{cost})")
         return "\n".join(lines)
 
 
