@@ -235,6 +235,61 @@ def extract_role(subject: str, body_snippet: str) -> Optional[str]:
         return normalize_space(m.group(1))
     return None
 
-def gmail_query_since(days_back: int) -> str:
+def gmail_query_since(days_back: int = 0) -> str:  # legacy helper
     # Only search for emails from 2025 or later
     return 'after:2025/01/01'
+
+
+# ---------------------------------------------------------------------------
+# Baseline classifier with the same output schema as Gemini. Used when Vertex
+# AI is not configured (``--no-llm``) and as the eval baseline.
+# ---------------------------------------------------------------------------
+
+REJECTION_KEYWORDS = [
+    "regret to inform", "unfortunately", "not selected", "not moving forward",
+    "moving forward with other candidates", "decided not to move forward",
+    "position has been filled", "no longer considering", "will not be moving forward",
+    "decided to pursue other candidates", "not to proceed",
+]
+OFFER_KEYWORDS = ["offer letter", "pleased to offer", "excited to offer", "offer of employment", "extend an offer"]
+INTERVIEW_KEYWORDS = [
+    "interview scheduled", "interview invitation", "invite you to interview", "schedule an interview",
+    "phone screen", "schedule a call", "availability for an interview", "like to interview",
+]
+ASSESSMENT_KEYWORDS = [
+    "technical assessment", "online assessment", "coding challenge", "hackerrank", "codility",
+    "codesignal", "hirevue", "take-home", "assessment invitation",
+]
+
+
+def classify_heuristic(subject: str, body: str, sender: str = ""):
+    """Keyword/regex classification returning an ``EmailAnalysis``."""
+    from .schemas import Category, EmailAnalysis
+
+    text = f"{subject or ''}\n{body or ''}".lower()
+    if any(k in text for k in OFFER_KEYWORDS):
+        category = Category.OFFER
+    elif any(k in text for k in REJECTION_KEYWORDS):
+        category = Category.REJECTION
+    elif any(k in text for k in ASSESSMENT_KEYWORDS):
+        category = Category.ASSESSMENT
+    elif any(k in text for k in INTERVIEW_KEYWORDS):
+        category = Category.INTERVIEW
+    elif contains_confirmation(subject, body[:1000] if body else ""):
+        category = Category.APPLICATION_CONFIRMATION
+    else:
+        category = Category.NOT_JOB_RELATED
+
+    from_name = re.sub(r"\s*<[^>]+>", "", sender or "").strip().strip('"')
+    is_job = category != Category.NOT_JOB_RELATED
+    role = extract_role(subject, body[:500] if body else "") if is_job else None
+    return EmailAnalysis(
+        category=category,
+        company=(extract_company(subject, from_name) or None) if is_job else None,
+        role_title=role,
+        job_id=extract_job_id(subject, body[:500] if body else "") if is_job else None,
+        location=None,
+        is_internship=("intern" in (role or "").lower() or "intern" in (subject or "").lower()) or None,
+        summary=normalize_space(subject)[:200],
+        confidence=0.5,
+    )

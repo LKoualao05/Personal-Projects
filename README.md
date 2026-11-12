@@ -2,104 +2,121 @@
 
 > **Part of [Personal-Projects](https://github.com/LKoualao05/Personal-Projects)** - A collection of general personal projects.
 
-This program scans your Gmail for **application confirmation emails** and logs each application to a **Google Sheet**. It runs idempotently (won't duplicate entries), keeps roles distinct by **Job ID and Title**, **groups by company** in a summary tab, and **ignores** assessments/interviews/status updates.
+Scans Gmail for job-application emails, uses **Gemini on Vertex AI** to classify and summarize each one, and keeps a **Google Sheet** of every application and its current status (Applied → Assessment → Interview → Offer / Rejected).
 
-## What it does
-- Searches Gmail for confirmation emails (e.g., "Application received", "Thanks for applying", "Your application to …").
-- Ignores non-confirmation updates (assessments, interviews, status updates).
-- Extracts: **Company**, **Role Title**, **Job ID**, **Date Applied**, **Message ID**, **From**, **Subject**, and **Thread URL**.
-- Writes to Google Sheets tab **`Applications`**, maintains a **`ProcessedMessageIds`** tab to avoid dupes.
-- Creates/refreshes a **`CompanySummary`** tab with one row per company plus counts.
-- Safe to run daily via GitHub Actions cron.
+## Roadmap
 
-## Recent Improvements ✨
-- **Significantly enhanced Gmail parsing robustness** - Increased from 0 to 29+ detected applications
-- **Expanded confirmation keywords** from 16 to 40+ phrases including LinkedIn, ATS systems, and platform-specific patterns
-- **Multiple search strategies** with 10 different query patterns for comprehensive email discovery
-- **Two-stage content analysis** with full email body extraction when needed
-- **Improved company and role extraction** with enhanced regex patterns
-- **Smart duplicate prevention** using ProcessedMessageIds tracking
+- [x] **Gemini on Vertex AI** classifies and summarizes applications
+- [ ] **ADK agent** exposes Gmail and Sheets through an **MCP server**
+- [ ] **RAG** over job descriptions with a vector store (Firestore vector search)
+- [ ] **Eval script** tracks accuracy, latency and cost per request
+- [ ] Deployed on **Cloud Run**
 
-## Quick Start (Local)
-1. Create a Google Cloud OAuth Client (Desktop app):
-   - Go to Google Cloud Console → APIs & Services → Credentials → **Create Credentials → OAuth client ID**.
-   - Application type: **Desktop app**.
-   - Download the JSON and save it as **`credentials.json`** in the project folder.
-2. Enable APIs:
-   - **Gmail API**, **Google Sheets API**.
-3. Create a Google Sheet:
-   - Note its **Sheet ID** (the long ID in the URL) and put it in `config.json`.
-   - The first run will auto-create the tabs if missing.
-4. Install & run:
+## How it works
+
+```
+Gmail (read-only) ──► candidate search (14 queries: confirmations, rejections, interviews, OAs, offers)
+                        │
+                        ▼
+              fetch full message (plain text, HTML → text)
+                        │
+                        ▼
+      Gemini on Vertex AI  ── structured JSON output (Pydantic schema) ──►  EmailAnalysis
+      (regex heuristics as fallback)                                         category, company, role,
+                        │                                                    job id, location, internship?,
+                        ▼                                                    one-line summary, confidence
+     apply in chronological order
+       • confirmation  → new row (deduped by company + role / job id)
+       • assessment / interview / offer / rejection → update status of the matching row
+       • not job-related (alerts, newsletters) → ignored
+                        │
+                        ▼
+Google Sheets: Applications · ProcessedMessageIds · CompanySummary
+```
+
+Every classified message id is recorded, so emails are never re-processed or re-billed. Each Gemini call records latency and token usage (input, output, thinking), which the sync report prints.
+
+### Email categories
+
+| Category | Sheet status | Examples |
+|---|---|---|
+| `application_confirmation` | Applied | "Thanks for applying", LinkedIn "Your application was sent" |
+| `status_update` | In Review | "Your application is under review" |
+| `assessment` | Assessment | HackerRank / CodeSignal / HireVue invites |
+| `interview` | Interview | "Let's schedule a phone screen" |
+| `offer` | Offer | "We're excited to offer you…" |
+| `rejection` | Rejected | "We've decided to move forward with other candidates" |
+| `not_job_related` | — | Job alerts, newsletters, talent-community sign-ups |
+
+## Project layout
+
+```
+main.py                 CLI: sync Gmail → Sheets
+diagnose.py             side-by-side heuristic vs Gemini classification (read-only)
+tracker/
+  config.py             settings from config.json, overridable by env vars
+  auth.py               Gmail/Sheets OAuth (file, env var, or Secret Manager mount)
+  gmail_client.py       Gmail search + message parsing
+  llm.py                Gemini classifier (Vertex AI, structured output, usage metering)
+  heuristics.py         keyword/regex classifier (fallback + eval baseline)
+  pipeline.py           sync logic: dedupe, status tracking, backfill
+  sheets_io.py          Google Sheets store (+ in-memory and dry-run stores)
+  schemas.py            Pydantic/dataclass types
+tests/                  pytest suite with fake Gmail / Gemini / Sheets (no network)
+```
+
+## Setup
+
+1. **Google Cloud project** with billing enabled. Enable the Gmail, Sheets and Vertex AI APIs:
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   python main.py
+   gcloud services enable gmail.googleapis.com sheets.googleapis.com aiplatform.googleapis.com
+   gcloud auth application-default login     # Vertex AI uses Application Default Credentials
    ```
-   - A browser will open to authorize once. A `token.json` will be saved for future runs.
-
-## Run Daily (GitHub Actions)
-
-### Step 1: Initial Local Setup
-1. **First, run locally once** to generate `token.json` (it contains the refresh token):
+2. **OAuth client** (Desktop app) for Gmail/Sheets: APIs & Services → Credentials → Create OAuth client ID → Desktop app. Save it as `credentials.json`.
+3. **Google Sheet**: put its ID in `config.json` (`SHEET_ID`). Tabs are created automatically.
+4. **Install & run**:
    ```bash
-   python main.py
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements-dev.txt
+   python main.py --reauth      # one-time browser consent → token.json
+   python main.py --dry-run     # preview changes
+   python main.py --backfill    # sync + add summaries/status to rows from the old regex tracker
+   python main.py               # normal daily sync
+   python -m pytest             # tests
    ```
 
-### Step 2: Set up GitHub Repository Secrets
-After your first successful local run, you'll need to add two secrets to your GitHub repository:
+### Configuration
 
-1. **Go to your GitHub repository → Settings → Secrets and variables → Actions → New repository secret**
+All keys in `config.json` can be overridden with environment variables of the same name.
 
-2. **Add `GOOGLE_OAUTH_TOKEN_JSON`**:
-   - Open `token.json` in your project directory
-   - Copy the **entire JSON content** (everything from `{` to `}`)
-   - Paste it as the secret value
-
-3. **Add `GOOGLE_CREDENTIALS_JSON`**:
-   - Open `credentials.json` in your project directory  
-   - Copy the **entire JSON content** (everything from `{` to `}`)
-   - Paste it as the secret value
-
-### Step 3: Commit and Push
-1. Ensure your `config.json` has the correct `SHEET_ID`
-2. Commit all files (the `.gitignore` will exclude sensitive files):
-   ```bash
-   git add .
-   git commit -m "Add GitHub Actions automation for daily Gmail tracking"
-   git push
-   ```
-
-### Step 4: Verify Automation
-- The workflow runs **daily at 9 AM EST (2 PM UTC)**
-- You can also trigger it manually from the **Actions** tab in GitHub
-- Check the **Actions** tab to see the workflow runs and any logs
-
-> ⚠️ **Security Note**: The GitHub Actions workflow creates temporary credential files during execution and automatically deletes them afterward. Your secrets are only accessible during the workflow run.
-
-> ⚠️ Gmail Service Accounts won't work for consumer accounts. Using your OAuth `token.json` as a secret is the simplest reliable approach for headless runs.
-
-## Customizing the detection
-- Edit keyword lists in `gmail_search.py` (`CONFIRMATION_KEYWORDS`, `EXCLUSION_KEYWORDS`) if needed.
-- The parser is designed to be conservative—**high recall** for confirmations while excluding updates.
+| Key | Default | Notes |
+|---|---|---|
+| `SHEET_ID` | — | Target spreadsheet |
+| `GCP_PROJECT` | — | Vertex AI project. If empty, the heuristic classifier is used |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any Gemini model on Vertex AI |
+| `GEMINI_LOCATION` | `global` | Vertex AI location |
+| `GEMINI_THINKING_LEVEL` | *(model default)* | `MINIMAL` / `LOW` / `MEDIUM` / `HIGH` |
+| `USE_LLM` | `true` | `false` forces the heuristic classifier |
+| `GMAIL_SEARCH_AFTER` | `2025/01/01` | Gmail search lower bound |
+| `LLM_MAX_WORKERS` | `6` | Parallel Gemini requests |
 
 ## Columns written to `Applications`
-- `Company`
-- `Role Title`
-- `Job ID`
-- `Date Applied` (YYYY-MM-DD)
-- `Gmail Thread URL`
-- `From`
-- `Subject`
-- `Message ID`
 
-## Support tabs
-- `ProcessedMessageIds` — stores message IDs that have been processed
-- `CompanySummary` — aggregates applications by company and counts distinct roles
+`Company` · `Role Title` · `Job ID` · `Date Applied` · `Gmail Thread URL` · `From` · `Subject` · `Message ID` · `Status` · `Summary` · `Location` · `Internship` · `Last Update` · `Classified By`
+
+The first eight match the original tracker, so existing sheets keep working. The new columns are added to the right.
+
+## Security notes
+
+- Gmail access is **read-only** (`gmail.readonly`). The app can never send, delete or modify email.
+- Email content is passed to Gemini as untrusted data, and the system prompt tells the model to ignore any instructions inside it. Output is constrained to a JSON schema.
+- `credentials.json` and `token.json` are git-ignored.
+
+## Run daily (GitHub Actions)
+
+`.github/workflows/daily-tracker.yml` runs the tracker every day at 9 AM ET with the heuristic classifier (the runner has no GCP credentials). Add the `GOOGLE_OAUTH_TOKEN_JSON` and `GOOGLE_CREDENTIALS_JSON` secrets (the contents of `token.json` and `credentials.json`). The Cloud Run deployment (see roadmap) replaces this with a Gemini-powered scheduled job.
 
 ---
 
-**Created:** 2025-9-5  
-**Enhanced:** 2025-10-25
-
+**Created:** 2025-9-5
+**Enhanced:** 2025-10-25 (parsing robustness) · 2026-11-11 (Gemini on Vertex AI)
