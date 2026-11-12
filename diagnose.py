@@ -1,44 +1,44 @@
 #!/usr/bin/env python3
-"""
-Diagnostic script to see what emails are being found but not classified as confirmations
+"""Show how candidate emails are classified, heuristic vs. Gemini, without writing anything.
+
+    python diagnose.py            # first 10 candidates
+    python diagnose.py 25         # first 25
 """
 
-import json
-from main import load_config, get_creds, build_services, search_confirmation_messages, get_header, parse_from_header
-from gmail_search import contains_confirmation
+from __future__ import annotations
 
-def diagnose_emails(limit=10):
-    """Check first few emails to see why they're not being classified as confirmations"""
-    cfg = load_config()
-    creds = get_creds()
-    gmail, sheets = build_services(creds)
-    
-    # Get potential message IDs
-    ids = search_confirmation_messages(gmail, cfg["GMAIL_QUERY_WINDOW_DAYS"])
-    print(f"Found {len(ids)} potential messages")
-    
-    print("\n=== DIAGNOSTIC: First {limit} messages ===")
-    
-    for i, mid in enumerate(ids[:limit]):
+import sys
+
+from tracker.auth import build_services, load_user_credentials
+from tracker.config import load_settings
+from tracker.gmail_client import fetch_message, search_candidate_messages
+from tracker.llm import HeuristicClassifier, make_classifier
+
+
+def diagnose_emails(limit: int = 10) -> None:
+    settings = load_settings()
+    gmail, _ = build_services(load_user_credentials(settings, interactive=sys.stdin.isatty()))
+    heuristic = HeuristicClassifier()
+    llm = make_classifier(settings)
+
+    ids = search_candidate_messages(gmail, settings.gmail_search_after)
+    print(f"Found {len(ids)} candidate messages; showing {min(limit, len(ids))}\n")
+    for i, mid in enumerate(ids[:limit], start=1):
         try:
-            msg = gmail.users().messages().get(userId="me", id=mid, format="metadata", metadataHeaders=["Subject","From"]).execute()
-            subject = get_header(msg, "Subject")
-            from_header = get_header(msg, "From")
-            from_name = parse_from_header(from_header)
-            snippet = msg.get("snippet","")
-            
-            is_confirmation = contains_confirmation(subject, snippet)
-            
-            print(f"\n--- Message {i+1} ---")
-            print(f"From: {from_name} ({from_header})")
-            print(f"Subject: {subject}")
-            print(f"Snippet: {snippet[:100]}...")
-            print(f"Is Confirmation: {is_confirmation}")
-            print("-" * 50)
-            
-        except Exception as e:
-            print(f"Error processing message {i+1}: {e}")
-            continue
+            email = fetch_message(gmail, mid)
+            h = heuristic.classify(email).analysis
+            print(f"--- {i}. {email.subject[:90]}")
+            print(f"    from:      {email.sender}")
+            print(f"    heuristic: {h.category.value:<26} company={h.company!r} role={h.role_title!r}")
+            if llm.name != "heuristic":
+                c = llm.classify(email)
+                g = c.analysis
+                usage = f"({c.stats.latency_s:.2f}s, {c.stats.input_tokens}+{c.stats.output_tokens} tok)" if c.stats else ""
+                print(f"    gemini:    {g.category.value:<26} company={g.company!r} role={g.role_title!r} {usage}")
+                print(f"    summary:   {g.summary}")
+        except Exception as exc:
+            print(f"--- {i}. error: {exc}")
+
 
 if __name__ == "__main__":
-    diagnose_emails(10)
+    diagnose_emails(int(sys.argv[1]) if len(sys.argv) > 1 else 10)

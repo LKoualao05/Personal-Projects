@@ -1,0 +1,10 @@
+[project]
+name = "gmail-internship-tracker"
+version = "2.0.0"
+description = "Gmail -> Gemini on Vertex AI -> Google Sheets internship application tracker"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
